@@ -1,12 +1,13 @@
 import 'dart:convert' show base64, utf8;
 import 'dart:math' show min;
 import 'dart:typed_data' show Uint8List;
-import 'exceptions.dart';
-import 'store.dart';
 
 import 'package:cross_file/cross_file.dart' show XFile;
 import 'package:http/http.dart' as http;
 import "package:path/path.dart" as p;
+
+import 'exceptions.dart';
+import 'store.dart';
 
 /// This class is used for creating or resuming uploads.
 class TusClient {
@@ -50,7 +51,7 @@ class TusClient {
     this.store,
     this.headers,
     this.metadata = const {},
-    this.maxChunkSize = 512 * 1024,
+    this.maxChunkSize = (1 << 31) - 1, //512 * 1024,
   }) {
     _fingerprint = generateFingerprint() ?? "";
     _uploadMetadata = generateMetadata();
@@ -193,7 +194,7 @@ class TusClient {
 
   /// Override this method to customize creating file fingerprint
   String? generateFingerprint() {
-    return file.path?.replaceAll(RegExp(r"\W+"), '.');
+    return file.path.replaceAll(RegExp(r"\W+"), '.');
   }
 
   /// Override this to customize creating 'Upload-Metadata'
@@ -201,7 +202,7 @@ class TusClient {
     final meta = Map<String, String>.from(metadata ?? {});
 
     if (!meta.containsKey("filename")) {
-      meta["filename"] = p.basename(file.path ?? "");
+      meta["filename"] = p.basename(file.path);
     }
 
     return meta.entries
