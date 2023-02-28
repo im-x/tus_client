@@ -55,12 +55,12 @@ await client.upload(
 
 ### Using Persistent URL Store
 
-This is only supported on Flutter Android, iOS and desktop, i.e. **not web**.
+This is only supported on Flutter Android, iOS, desktop and web.
 You need to add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  tus_client: ^0.1.1
+  tus_client: ^1.0.2
   tus_client_file_store: ^0.0.3
 ```
 
