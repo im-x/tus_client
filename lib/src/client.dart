@@ -75,7 +75,7 @@ class TusClient {
   http.Client getHttpClient() => http.Client();
 
   /// Create a new [upload] throwing [ProtocolException] on server error
-  create() async {
+  Future<bool> create(Function(String?)? onCompleteCallback) async {
     _fileSize = await file.length();
 
     final client = getHttpClient();
@@ -87,7 +87,15 @@ class TusClient {
       });
 
     final response = await client.post(url, headers: createHeaders);
-    if (!(response.statusCode >= 200 && response.statusCode < 300) &&
+    final statusCode = response.statusCode;
+    if (statusCode == 409) {
+      this.onComplete();
+      if (onCompleteCallback != null) {
+        final fileInfo = response.headers['fileinfo'] ?? '';
+        onCompleteCallback(fileInfo);
+      }
+      return true;
+    } else if (!(response.statusCode >= 200 && response.statusCode < 300) &&
         response.statusCode != 404) {
       throw ProtocolException(
           "unexpected status code (${response.statusCode}) while creating upload");
@@ -101,6 +109,7 @@ class TusClient {
 
     _uploadUrl = _parseUrl(urlStr);
     store?.set(_fingerprint, _uploadUrl as Uri);
+    return false;
   }
 
   /// Check if possible to resume an already started upload
@@ -124,10 +133,13 @@ class TusClient {
   /// [ProtocolException] on server error
   upload({
     Function(double)? onProgress,
-    Function()? onComplete,
+    Function(String?)? onCompleteCallback,
   }) async {
     if (!await resume()) {
-      await create();
+      final result = await create(onCompleteCallback);
+      if (result) {
+        return;
+      }
     }
 
     // get offset from server
@@ -176,8 +188,8 @@ class TusClient {
 
       if (_offset == totalBytes) {
         this.onComplete();
-        if (onComplete != null) {
-          onComplete();
+        if (onCompleteCallback != null) {
+          onCompleteCallback(null);
         }
       }
     }

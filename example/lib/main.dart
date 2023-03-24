@@ -97,7 +97,7 @@ class _UploadPageState extends State<UploadPage> {
 
                               print("Starting upload");
                               await _client.upload(
-                                onComplete: () async {
+                                onCompleteCallback: (String? fileInfo) async {
                                   print("Completed!");
                                   setState(() => _fileUrl = _client.uploadUrl);
                                 },
