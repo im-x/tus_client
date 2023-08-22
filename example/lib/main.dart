@@ -28,9 +28,9 @@ class UploadPage extends StatefulWidget {
 
 class _UploadPageState extends State<UploadPage> {
   double _progress = 0;
-  XFile _file;
-  TusClient _client;
-  Uri _fileUrl;
+  XFile? _file;
+  TusClient? _client;
+  Uri? _fileUrl;
 
   @override
   Widget build(BuildContext context) {
@@ -91,15 +91,15 @@ class _UploadPageState extends State<UploadPage> {
                               print("Create a client");
                               _client = TusClient(
                                 Uri.parse("https://master.tus.io/files/"),
-                                _file,
+                                _file!,
                                 store: TusMemoryStore(),
                               );
 
                               print("Starting upload");
-                              await _client.upload(
+                              await _client!.upload(
                                 onCompleteCallback: (String? fileInfo) async {
                                   print("Completed!");
-                                  setState(() => _fileUrl = _client.uploadUrl);
+                                  setState(() => _fileUrl = _client!.uploadUrl);
                                 },
                                 onProgress: (progress) {
                                   print("Progress: $progress");
@@ -116,7 +116,7 @@ class _UploadPageState extends State<UploadPage> {
                       onPressed: _progress == 0
                           ? null
                           : () async {
-                              _client.pause();
+                              _client?.pause();
                             },
                       child: Text("Pause"),
                     ),
@@ -171,16 +171,16 @@ class _UploadPageState extends State<UploadPage> {
   }
 
   /// Copy file to temporary directory before uploading
-  Future<XFile> _getXFile(FilePickerResult result) async {
+  Future<XFile?> _getXFile(FilePickerResult? result) async {
     if (result != null) {
       final chosenFile = result.files.first;
       if (chosenFile.path != null) {
         // Android, iOS, Desktop
-        return XFile(chosenFile.path);
+        return XFile(chosenFile.path!);
       } else {
         // Web
         return XFile.fromData(
-          chosenFile.bytes,
+          chosenFile.bytes!,
           name: chosenFile.name,
         );
       }
