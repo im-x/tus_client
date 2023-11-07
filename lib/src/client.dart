@@ -2,6 +2,8 @@ import 'dart:convert' show base64, utf8;
 import 'dart:ffi';
 import 'dart:math' show min;
 import 'dart:typed_data' show Uint8List, BytesBuilder;
+import 'package:http/http.dart';
+
 import 'exceptions.dart';
 import 'store.dart';
 
@@ -90,7 +92,17 @@ class TusClient {
         "Upload-Length": "$_fileSize",
       });
 
-    final response = await client.post(url, headers: createHeaders);
+    Response? response;
+    try {
+      response = await client.post(url, headers: createHeaders);
+    } catch (e) {
+      onErrorCallback?.call(e.toString());
+    }
+
+    if (response == null) {
+      return false;
+    }
+
     final statusCode = response.statusCode;
     if (statusCode == 409) {
       this.onComplete();

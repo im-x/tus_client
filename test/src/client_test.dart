@@ -84,7 +84,7 @@ main() {
         (_) async =>
             http.Response("", 201, headers: {"location": uploadLocation}));
 
-    await client.create((String? fileInfo) => {});
+    await client.create((String? fileInfo) => {}, (String? fileInfo) => {});
 
     expect(client.uploadUrl.toString(), equals(uploadLocation));
     expect(
@@ -103,7 +103,7 @@ main() {
                   "//example.com/tus/1ae64b4f-bd7a-410b-893d-3614a4bd68a6"
             }));
 
-    await client.create((String? fileInfo) => {});
+    await client.create((String? fileInfo) => {}, (String? fileInfo) => {});
 
     expect(client.uploadUrl.toString(), equals(uploadLocation));
     expect(
@@ -121,7 +121,7 @@ main() {
               "location": "/tus/1ae64b4f-bd7a-410b-893d-3614a4bd68a6"
             }));
 
-    await client.create((String? fileInfo) => {});
+    await client.create((String? fileInfo) => {}, (String? fileInfo) => {});
 
     expect(client.uploadUrl.toString(), equals(uploadLocation));
     expect(
@@ -139,7 +139,7 @@ main() {
               "location": "/tus/1ae64b4f-bd7a-410b-893d-3614a4bd68a6"
             }));
 
-    await client.create((String? fileInfo) => {});
+    await client.create((String? fileInfo) => {}, (String? fileInfo) => {});
 
     expect(client.uploadUrl.toString(), equals(uploadLocationWithPort));
     expect(
@@ -156,7 +156,7 @@ main() {
         (_) async => http.Response("", 201,
             headers: {"location": "$uploadLocation,$uploadLocation"}));
 
-    await client.create((String? fileInfo) => {});
+    await client.create((String? fileInfo) => {}, (String? fileInfo) => {});
 
     expect(client.uploadUrl.toString(), equals(uploadLocation));
     expect(
@@ -173,7 +173,7 @@ main() {
         (_) async => http.Response("", 201, headers: {"location": ""}));
 
     expectLater(
-        () => client.create((String? fileInfo) => {}),
+        () => client.create((String? fileInfo) => {}, (String? fileInfo) => {}),
         throwsA(predicate((e) =>
             e is ProtocolException &&
             e.message ==
@@ -186,7 +186,7 @@ main() {
         .thenAnswer((_) async => http.Response("500 Server Error", 500));
 
     expectLater(
-        () => client.create((String? fileInfo) => {}),
+        () => client.create((String? fileInfo) => {}, (String? fileInfo) => {}),
         throwsA(predicate((e) =>
             e is ProtocolException &&
             e.message ==
