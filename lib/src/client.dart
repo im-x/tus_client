@@ -1,4 +1,5 @@
 import 'dart:convert' show base64, utf8;
+import 'dart:ffi';
 import 'dart:math' show min;
 import 'dart:typed_data' show Uint8List, BytesBuilder;
 import 'exceptions.dart';
@@ -75,7 +76,10 @@ class TusClient {
   http.Client getHttpClient() => http.Client();
 
   /// Create a new [upload] throwing [ProtocolException] on server error
-  Future<bool> create(Function(String?)? onCompleteCallback) async {
+  Future<bool> create(
+    Function(String?)? onCompleteCallback,
+    Function(String?)? onErrorCallback,
+  ) async {
     _fileSize = await file.length();
 
     final client = getHttpClient();
@@ -97,12 +101,16 @@ class TusClient {
       return true;
     } else if (!(response.statusCode >= 200 && response.statusCode < 300) &&
         response.statusCode != 404) {
+      onErrorCallback?.call(
+          "unexpected status code (${response.statusCode}) while creating upload");
       throw ProtocolException(
           "unexpected status code (${response.statusCode}) while creating upload");
     }
 
     String urlStr = response.headers["location"] ?? "";
     if (urlStr.isEmpty) {
+      onErrorCallback
+          ?.call("missing upload Uri in response for creating upload");
       throw ProtocolException(
           "missing upload Uri in response for creating upload");
     }
@@ -133,10 +141,11 @@ class TusClient {
   /// [ProtocolException] on server error
   upload({
     Function(double)? onProgress,
+    Function(String?)? onErrorCallback,
     Function(String?)? onCompleteCallback,
   }) async {
     if (!await resume()) {
-      final result = await create(onCompleteCallback);
+      final result = await create(onCompleteCallback, onErrorCallback);
       if (result) {
         return;
       }
@@ -167,16 +176,22 @@ class TusClient {
 
       // check if correctly uploaded
       if (!(response.statusCode >= 200 && response.statusCode < 300)) {
+        onErrorCallback?.call(
+            "unexpected status code (${response.statusCode}) while uploading chunk");
         throw ProtocolException(
             "unexpected status code (${response.statusCode}) while uploading chunk");
       }
 
       int? serverOffset = _parseOffset(response.headers["upload-offset"]);
       if (serverOffset == null) {
+        onErrorCallback?.call(
+            "response to PATCH request contains no or invalid Upload-Offset header");
         throw ProtocolException(
             "response to PATCH request contains no or invalid Upload-Offset header");
       }
       if (_offset != serverOffset) {
+        onErrorCallback?.call(
+            "response contains different Upload-Offset value ($serverOffset) than expected ($_offset)");
         throw ProtocolException(
             "response contains different Upload-Offset value ($serverOffset) than expected ($_offset)");
       }
