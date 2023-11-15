@@ -164,7 +164,12 @@ class TusClient {
     }
 
     // get offset from server
-    _offset = await _getOffset();
+    try {
+      _offset = await _getOffset();
+    } catch (e) {
+      onErrorCallback?.call(e.toString());
+      return;
+    }
 
     int totalBytes = _fileSize as int;
 
