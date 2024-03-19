@@ -50,6 +50,12 @@ class TusClient {
 
   Future? _chunkPatchFuture;
 
+  /// 是否忽略409报错，走新版本的TUS上传逻辑，此时上传结束后此时服务器会返回fileinfo
+  bool ignore409 = false;
+
+  /// 是否直接上传图片bytes， 如果true，则设置Headers 添加 "Image-Fast-Upload": "true", 直接将bytes塞入body中
+  bool postImageDirect = false;
+
   TusClient(
     this.url,
     this.file, {
@@ -57,6 +63,8 @@ class TusClient {
     this.headers,
     this.metadata = const {},
     this.maxChunkSize = (1 << 31) - 1, //512 * 1024,
+    this.ignore409 = false,
+    this.postImageDirect = false,
   }) {
     _fingerprint = generateFingerprint() ?? "";
     _uploadMetadata = generateMetadata();
@@ -92,9 +100,17 @@ class TusClient {
         "Upload-Length": "$_fileSize",
       });
 
+    if (postImageDirect) {
+      createHeaders["Image-Fast-Upload"] = "true";
+    }
+
     Response? response;
     try {
-      response = await client.post(url, headers: createHeaders);
+      response = await client.post(
+        url,
+        headers: createHeaders,
+        body: postImageDirect ? await file.readAsBytes() : null,
+      );
     } catch (e) {
       onErrorCallback?.call(e.toString());
     }
@@ -104,6 +120,18 @@ class TusClient {
     }
 
     final statusCode = response.statusCode;
+    final fileInfo = response.headers['fileinfo'];
+
+    /// fileInfo 不为空，表示文件存在直接设置文件信息
+    if (fileInfo != null && ignore409) {
+      this.onComplete();
+      if (onCompleteCallback != null) {
+        final fileInfo = response.headers['fileinfo'] ?? '';
+        onCompleteCallback(fileInfo);
+      }
+      return true;
+    }
+
     if (statusCode == 409) {
       this.onComplete();
       if (onCompleteCallback != null) {
@@ -221,7 +249,8 @@ class TusClient {
       if (_offset == totalBytes) {
         this.onComplete();
         if (onCompleteCallback != null) {
-          onCompleteCallback(null);
+          final fileInfo = response.headers['fileinfo'] ?? '';
+          onCompleteCallback(fileInfo);
         }
       }
     }
