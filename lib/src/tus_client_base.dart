@@ -23,6 +23,12 @@ abstract class TusClientBase {
   /// List of [Server] that are good for testing speed
   List<Server>? bestServers;
 
+  /// 是否忽略409报错，走新版本的TUS上传逻辑，此时上传结束后此时服务器会返回fileinfo
+  bool ignore409 = false;
+
+  /// 是否直接上传图片bytes， 如果true，则设置Headers 添加 "Image-Fast-Upload": "true", 直接将bytes塞入body中
+  bool postImageDirect = false;
+
   TusClientBase(
     this.file, {
     this.store,
@@ -30,10 +36,15 @@ abstract class TusClientBase {
     this.retries = 0,
     this.retryScale = RetryScale.constant,
     this.retryInterval = 0,
+    this.ignore409 = false,
+    this.postImageDirect = false,
   });
 
   /// Create a new upload URL
-  Future<void> createUpload();
+  Future<void> createUpload({
+    Function(String?)? onComplete,
+    Function(String?)? onUploadError,
+  });
 
   /// Checks if upload can be resumed.
   Future<bool> isResumable();
@@ -42,7 +53,8 @@ abstract class TusClientBase {
   Future<void> upload({
     Function(double, Duration)? onProgress,
     Function(TusClient, Duration?)? onStart,
-    Function()? onComplete,
+    Function(String?)? onComplete,
+    Function(String?)? onUploadError,
     required Uri uri,
     Map<String, String>? metadata = const {},
     Map<String, String>? headers = const {},

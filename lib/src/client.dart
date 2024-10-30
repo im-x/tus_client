@@ -3,6 +3,7 @@ import 'dart:developer';
 import 'dart:io';
 import 'dart:math' show min;
 import 'dart:typed_data' show Uint8List, BytesBuilder;
+import 'package:http/http.dart';
 import 'package:speed_test_dart/speed_test_dart.dart';
 import 'package:tus_client_dart/src/retry_scale.dart';
 import 'package:tus_client_dart/src/tus_client_base.dart';
@@ -29,7 +30,10 @@ class TusClient extends TusClientBase {
   int _actualRetry = 0;
 
   /// Create a new [upload] throwing [ProtocolException] on server error
-  Future<void> createUpload() async {
+  Future<bool> createUpload({
+    Function(String?)? onComplete,
+    Function(String?)? onUploadError,
+  }) async {
     try {
       _fileSize = await file.length();
 
@@ -41,22 +45,63 @@ class TusClient extends TusClientBase {
           "Upload-Length": "$_fileSize",
         });
 
+      if (postImageDirect) {
+        createHeaders["Image-Fast-Upload"] = "true";
+      }
+
       final _url = url;
 
       if (_url == null) {
         throw ProtocolException('Error in request, URL is incorrect');
       }
 
-      final response = await client.post(_url, headers: createHeaders);
+      Response? response;
+      try {
+        response = await client.post(
+          _url,
+          headers: createHeaders,
+          body: postImageDirect ? await file.readAsBytes() : null,
+        );
+      } catch (e) {
+        onUploadError?.call(e.toString());
+      }
+
+      if (response == null) {
+        return false;
+      }
+
+      final statusCode = response.statusCode;
+      final fileInfo = response.headers['fileinfo'];
+
+      /// fileInfo 不为空，表示文件存在直接设置文件信息
+      if (fileInfo != null && ignore409) {
+        if (onComplete != null) {
+          final fileInfo = response.headers['fileinfo'] ?? '';
+          onComplete.call(fileInfo);
+        }
+        return true;
+      }
+
+      if (statusCode == 409) {
+        if (onComplete != null) {
+          final fileInfo = response.headers['fileinfo'] ?? '';
+          onComplete.call(fileInfo);
+        }
+        return true;
+      }
 
       if (!(response.statusCode >= 200 && response.statusCode < 300) &&
           response.statusCode != 404) {
+        onUploadError?.call(
+            "unexpected status code (${response.statusCode}) while creating upload");
         throw ProtocolException(
             "Unexpected Error while creating upload", response.statusCode);
       }
 
       String urlStr = response.headers["location"] ?? "";
       if (urlStr.isEmpty) {
+        onUploadError
+            ?.call("missing upload Uri in response for creating upload");
         throw ProtocolException(
             "missing upload Uri in response for creating upload");
       }
@@ -66,6 +111,8 @@ class TusClient extends TusClientBase {
     } on FileSystemException {
       throw Exception('Cannot find file to upload');
     }
+
+    return false;
   }
 
   Future<bool> isResumable() async {
@@ -127,7 +174,8 @@ class TusClient extends TusClientBase {
   Future<void> upload({
     Function(double, Duration)? onProgress,
     Function(TusClient, Duration?)? onStart,
-    Function()? onComplete,
+    Function(String?)? onComplete,
+    Function(String?)? onUploadError,
     required Uri uri,
     Map<String, String>? metadata = const {},
     Map<String, String>? headers = const {},
@@ -143,11 +191,22 @@ class TusClient extends TusClientBase {
     }
 
     if (!_isResumable) {
-      await createUpload();
+      final result = await createUpload(
+        onComplete: onComplete,
+        onUploadError: onUploadError,
+      );
+      if (result) {
+        return;
+      }
     }
 
     // get offset from server
-    _offset = await _getOffset();
+    try {
+      _offset = await _getOffset();
+    } catch (e) {
+      onUploadError?.call(e.toString());
+      return;
+    }
 
     // Save the file size as an int in a variable to avoid having to call
     int totalBytes = _fileSize as int;
@@ -195,7 +254,8 @@ class TusClient extends TusClientBase {
 
   Future<void> _performUpload({
     Function(double, Duration)? onProgress,
-    Function()? onComplete,
+    Function(String?)? onComplete,
+    Function(String?)? onUploadError,
     required Map<String, String> uploadHeaders,
     required http.Client client,
     required Stopwatch uploadStopwatch,
@@ -244,6 +304,8 @@ class TusClient extends TusClientBase {
 
         // check if correctly uploaded
         if (!(_response!.statusCode >= 200 && _response!.statusCode < 300)) {
+          onUploadError?.call(
+              "unexpected status code (${_response!.statusCode}) while uploading chunk");
           throw ProtocolException(
             "Error while uploading file",
             _response!.statusCode,
@@ -252,10 +314,14 @@ class TusClient extends TusClientBase {
 
         int? serverOffset = _parseOffset(_response!.headers["upload-offset"]);
         if (serverOffset == null) {
+          onUploadError?.call(
+              "response to PATCH request contains no or invalid Upload-Offset header");
           throw ProtocolException(
               "Response to PATCH request contains no or invalid Upload-Offset header");
         }
         if (_offset != serverOffset) {
+          onUploadError?.call(
+              "response contains different Upload-Offset value ($serverOffset) than expected ($_offset)");
           throw ProtocolException(
               "Response contains different Upload-Offset value ($serverOffset) than expected ($_offset)");
         }
@@ -263,7 +329,8 @@ class TusClient extends TusClientBase {
         if (_offset == totalBytes && !_pauseUpload) {
           this.onCompleteUpload();
           if (onComplete != null) {
-            onComplete();
+            final fileInfo = _response!.headers['fileinfo'] ?? '';
+            onComplete(fileInfo);
           }
         }
       } else {
