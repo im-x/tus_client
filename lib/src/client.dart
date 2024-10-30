@@ -1,213 +1,329 @@
-import 'dart:convert' show base64, utf8;
+import 'dart:async';
+import 'dart:developer';
+import 'dart:io';
 import 'dart:math' show min;
 import 'dart:typed_data' show Uint8List, BytesBuilder;
-import 'exceptions.dart';
-import 'store.dart';
+import 'package:speed_test_dart/speed_test_dart.dart';
+import 'package:tus_client_dart/src/retry_scale.dart';
+import 'package:tus_client_dart/src/tus_client_base.dart';
 
-import 'package:cross_file/cross_file.dart' show XFile;
+import 'exceptions.dart';
 import 'package:http/http.dart' as http;
-import "package:path/path.dart" as p;
 
 /// This class is used for creating or resuming uploads.
-class TusClient {
-  /// Version of the tus protocol used by the client. The remote server needs to
-  /// support this version, too.
-  static final tusVersion = "1.0.0";
-
-  /// The tus server Uri
-  final Uri url;
-
-  /// Storage used to save and retrieve upload URLs by its fingerprint.
-  final TusStore? store;
-
-  final XFile file;
-
-  final Map<String, String>? metadata;
-
-  /// Any additional headers
-  final Map<String, String>? headers;
-
-  /// The maximum payload size in bytes when uploading the file in chunks (512KB)
-  final int maxChunkSize;
-
-  int? _fileSize;
-
-  String _fingerprint = "";
-
-  String? _uploadMetadata;
-
-  Uri? _uploadUrl;
-
-  int? _offset;
-
-  bool _pauseUpload = false;
-
-  Future? _chunkPatchFuture;
-
+class TusClient extends TusClientBase {
   TusClient(
-    this.url,
-    this.file, {
-    this.store,
-    this.headers,
-    this.metadata = const {},
-    this.maxChunkSize = 512 * 1024,
+    super.file, {
+    super.store,
+    super.maxChunkSize = 512 * 1024,
+    super.retries = 0,
+    super.retryScale = RetryScale.constant,
+    super.retryInterval = 0,
   }) {
     _fingerprint = generateFingerprint() ?? "";
-    _uploadMetadata = generateMetadata();
   }
-
-  /// Whether the client supports resuming
-  bool get resumingEnabled => store != null;
-
-  /// The URI on the server for the file
-  Uri? get uploadUrl => _uploadUrl;
-
-  /// The fingerprint of the file being uploaded
-  String get fingerprint => _fingerprint;
-
-  /// The 'Upload-Metadata' header sent to server
-  String get uploadMetadata => _uploadMetadata ?? "";
 
   /// Override this method to use a custom Client
   http.Client getHttpClient() => http.Client();
 
+  int _actualRetry = 0;
+
   /// Create a new [upload] throwing [ProtocolException] on server error
-  create() async {
-    _fileSize = await file.length();
+  Future<void> createUpload() async {
+    try {
+      _fileSize = await file.length();
 
-    final client = getHttpClient();
-    final createHeaders = Map<String, String>.from(headers ?? {})
-      ..addAll({
-        "Tus-Resumable": tusVersion,
-        "Upload-Metadata": _uploadMetadata ?? "",
-        "Upload-Length": "$_fileSize",
-      });
+      final client = getHttpClient();
+      final createHeaders = Map<String, String>.from(headers ?? {})
+        ..addAll({
+          "Tus-Resumable": tusVersion,
+          "Upload-Metadata": _uploadMetadata ?? "",
+          "Upload-Length": "$_fileSize",
+        });
 
-    final response = await client.post(url, headers: createHeaders);
-    if (!(response.statusCode >= 200 && response.statusCode < 300) &&
-        response.statusCode != 404) {
-      throw ProtocolException(
-          "unexpected status code (${response.statusCode}) while creating upload");
+      final _url = url;
+
+      if (_url == null) {
+        throw ProtocolException('Error in request, URL is incorrect');
+      }
+
+      final response = await client.post(_url, headers: createHeaders);
+
+      if (!(response.statusCode >= 200 && response.statusCode < 300) &&
+          response.statusCode != 404) {
+        throw ProtocolException(
+            "Unexpected Error while creating upload", response.statusCode);
+      }
+
+      String urlStr = response.headers["location"] ?? "";
+      if (urlStr.isEmpty) {
+        throw ProtocolException(
+            "missing upload Uri in response for creating upload");
+      }
+
+      _uploadUrl = _parseUrl(urlStr);
+      store?.set(_fingerprint, _uploadUrl as Uri);
+    } on FileSystemException {
+      throw Exception('Cannot find file to upload');
     }
-
-    String urlStr = response.headers["location"] ?? "";
-    if (urlStr.isEmpty) {
-      throw ProtocolException(
-          "missing upload Uri in response for creating upload");
-    }
-
-    _uploadUrl = _parseUrl(urlStr);
-    store?.set(_fingerprint, _uploadUrl as Uri);
   }
 
-  /// Check if possible to resume an already started upload
-  Future<bool> resume() async {
-    _fileSize = await file.length();
-    _pauseUpload = false;
+  Future<bool> isResumable() async {
+    try {
+      _fileSize = await file.length();
+      _pauseUpload = false;
 
-    if (!resumingEnabled) {
+      if (!resumingEnabled) {
+        return false;
+      }
+
+      _uploadUrl = await store?.get(_fingerprint);
+
+      if (_uploadUrl == null) {
+        return false;
+      }
+      return true;
+    } on FileSystemException {
+      throw Exception('Cannot find file to upload');
+    } catch (e) {
       return false;
     }
+  }
 
-    _uploadUrl = await store?.get(_fingerprint);
+  Future<void> setUploadTestServers() async {
+    final tester = SpeedTestDart();
 
-    if (_uploadUrl == null) {
-      return false;
+    try {
+      final settings = await tester.getSettings();
+      final servers = settings.servers;
+
+      bestServers = await tester.getBestServers(
+        servers: servers,
+      );
+    } catch (_) {
+      bestServers = null;
     }
-    return true;
+  }
+
+  Future<void> uploadSpeedTest() async {
+    final tester = SpeedTestDart();
+
+    // If bestServers are null or they are empty, we will not measure upload speed
+    // as it wouldn't be accurate at all
+    if (bestServers == null || (bestServers?.isEmpty ?? true)) {
+      uploadSpeed = null;
+      return;
+    }
+
+    try {
+      uploadSpeed = await tester.testUploadSpeed(servers: bestServers ?? []);
+    } catch (_) {
+      uploadSpeed = null;
+    }
   }
 
   /// Start or resume an upload in chunks of [maxChunkSize] throwing
   /// [ProtocolException] on server error
-  upload({
-    Function(double)? onProgress,
+  Future<void> upload({
+    Function(double, Duration)? onProgress,
+    Function(TusClient, Duration?)? onStart,
     Function()? onComplete,
+    required Uri uri,
+    Map<String, String>? metadata = const {},
+    Map<String, String>? headers = const {},
+    bool measureUploadSpeed = false,
   }) async {
-    if (!await resume()) {
-      await create();
+    setUploadData(uri, headers, metadata);
+
+    final _isResumable = await isResumable();
+
+    if (measureUploadSpeed) {
+      await setUploadTestServers();
+      await uploadSpeedTest();
+    }
+
+    if (!_isResumable) {
+      await createUpload();
     }
 
     // get offset from server
     _offset = await _getOffset();
 
+    // Save the file size as an int in a variable to avoid having to call
     int totalBytes = _fileSize as int;
+
+    // We start a stopwatch to calculate the upload speed
+    final uploadStopwatch = Stopwatch()..start();
 
     // start upload
     final client = getHttpClient();
 
-    while (!_pauseUpload && (_offset ?? 0) < totalBytes) {
+    if (onStart != null) {
+      Duration? estimate;
+      if (uploadSpeed != null) {
+        final _workedUploadSpeed = uploadSpeed! * 1000000;
+
+        estimate = Duration(
+          seconds: (totalBytes / _workedUploadSpeed).round(),
+        );
+      }
+      // The time remaining to finish the upload
+      onStart(this, estimate);
+    }
+
+    while (!_pauseUpload && _offset < totalBytes) {
+      if (!File(file.path).existsSync()) {
+        throw Exception("Cannot find file ${file.path.split('/').last}");
+      }
       final uploadHeaders = Map<String, String>.from(headers ?? {})
         ..addAll({
           "Tus-Resumable": tusVersion,
           "Upload-Offset": "$_offset",
           "Content-Type": "application/offset+octet-stream"
         });
-      _chunkPatchFuture = client.patch(
-        _uploadUrl as Uri,
-        headers: uploadHeaders,
-        body: await _getData(),
+
+      await _performUpload(
+        onComplete: onComplete,
+        onProgress: onProgress,
+        uploadHeaders: uploadHeaders,
+        client: client,
+        uploadStopwatch: uploadStopwatch,
+        totalBytes: totalBytes,
       );
-      final response = await _chunkPatchFuture;
-      _chunkPatchFuture = null;
+    }
+  }
 
-      // check if correctly uploaded
-      if (!(response.statusCode >= 200 && response.statusCode < 300)) {
-        throw ProtocolException(
-            "unexpected status code (${response.statusCode}) while uploading chunk");
-      }
+  Future<void> _performUpload({
+    Function(double, Duration)? onProgress,
+    Function()? onComplete,
+    required Map<String, String> uploadHeaders,
+    required http.Client client,
+    required Stopwatch uploadStopwatch,
+    required int totalBytes,
+  }) async {
+    try {
+      final request = http.Request("PATCH", _uploadUrl as Uri)
+        ..headers.addAll(uploadHeaders)
+        ..bodyBytes = await _getData();
+      _response = await client.send(request);
 
-      int? serverOffset = _parseOffset(response.headers["upload-offset"]);
-      if (serverOffset == null) {
-        throw ProtocolException(
-            "response to PATCH request contains no or invalid Upload-Offset header");
-      }
-      if (_offset != serverOffset) {
-        throw ProtocolException(
-            "response contains different Upload-Offset value ($serverOffset) than expected ($_offset)");
-      }
+      if (_response != null) {
+        _response?.stream.listen(
+          (newBytes) {
+            if (_actualRetry != 0) _actualRetry = 0;
+          },
+          onDone: () {
+            if (onProgress != null && !_pauseUpload) {
+              // Total byte sent
+              final totalSent = _offset + maxChunkSize;
+              double _workedUploadSpeed = 1.0;
 
-      // update progress
-      if (onProgress != null) {
-        onProgress((_offset ?? 0) / totalBytes * 100);
-      }
+              // If upload speed != null, it means it has been measured
+              if (uploadSpeed != null) {
+                // Multiplied by 10^6 to convert from Mb/s to b/s
+                _workedUploadSpeed = uploadSpeed! * 1000000;
+              } else {
+                _workedUploadSpeed =
+                    totalSent / uploadStopwatch.elapsedMilliseconds;
+              }
 
-      if (_offset == totalBytes) {
-        this.onComplete();
-        if (onComplete != null) {
-          onComplete();
+              // The data that hasn't been sent yet
+              final remainData = totalBytes - totalSent;
+
+              // The time remaining to finish the upload
+              final estimate = Duration(
+                seconds: (remainData / _workedUploadSpeed).round(),
+              );
+
+              final progress = totalSent / totalBytes * 100;
+              onProgress((progress).clamp(0, 100), estimate);
+              _actualRetry = 0;
+            }
+          },
+        );
+
+        // check if correctly uploaded
+        if (!(_response!.statusCode >= 200 && _response!.statusCode < 300)) {
+          throw ProtocolException(
+            "Error while uploading file",
+            _response!.statusCode,
+          );
         }
+
+        int? serverOffset = _parseOffset(_response!.headers["upload-offset"]);
+        if (serverOffset == null) {
+          throw ProtocolException(
+              "Response to PATCH request contains no or invalid Upload-Offset header");
+        }
+        if (_offset != serverOffset) {
+          throw ProtocolException(
+              "Response contains different Upload-Offset value ($serverOffset) than expected ($_offset)");
+        }
+
+        if (_offset == totalBytes && !_pauseUpload) {
+          this.onCompleteUpload();
+          if (onComplete != null) {
+            onComplete();
+          }
+        }
+      } else {
+        throw ProtocolException("Error getting Response from server");
       }
+    } catch (e) {
+      if (_actualRetry >= retries) rethrow;
+      final waitInterval = retryScale.getInterval(
+        _actualRetry,
+        retryInterval,
+      );
+      _actualRetry += 1;
+      log('Failed to upload,try: $_actualRetry, interval: $waitInterval');
+      await Future.delayed(waitInterval);
+      return await _performUpload(
+        onComplete: onComplete,
+        onProgress: onProgress,
+        uploadHeaders: uploadHeaders,
+        client: client,
+        uploadStopwatch: uploadStopwatch,
+        totalBytes: totalBytes,
+      );
     }
   }
 
   /// Pause the current upload
-  pause() {
-    _pauseUpload = true;
-    _chunkPatchFuture?.timeout(Duration.zero, onTimeout: () {});
+  Future<bool> pauseUpload() async {
+    try {
+      _pauseUpload = true;
+      await _response?.stream.timeout(Duration.zero);
+      return true;
+    } catch (e) {
+      throw Exception("Error pausing upload");
+    }
+  }
+
+  Future<bool> cancelUpload() async {
+    try {
+      await pauseUpload();
+      await store?.remove(_fingerprint);
+      return true;
+    } catch (_) {
+      throw Exception("Error cancelling upload");
+    }
   }
 
   /// Actions to be performed after a successful upload
-  void onComplete() {
-    store?.remove(_fingerprint);
+  Future<void> onCompleteUpload() async {
+    await store?.remove(_fingerprint);
   }
 
-  /// Override this method to customize creating file fingerprint
-  String? generateFingerprint() {
-    return file.path.replaceAll(RegExp(r"\W+"), '.');
-  }
-
-  /// Override this to customize creating 'Upload-Metadata'
-  String generateMetadata() {
-    final meta = Map<String, String>.from(metadata ?? {});
-
-    if (!meta.containsKey("filename")) {
-      meta["filename"] = p.basename(file.path);
-    }
-
-    return meta.entries
-        .map((entry) =>
-            entry.key + " " + base64.encode(utf8.encode(entry.value)))
-        .join(",");
+  void setUploadData(
+    Uri url,
+    Map<String, String>? headers,
+    Map<String, String>? metadata,
+  ) {
+    this.url = url;
+    this.headers = headers;
+    this.metadata = metadata;
+    _uploadMetadata = generateMetadata();
   }
 
   /// Get offset from server throwing [ProtocolException] on error
@@ -223,7 +339,9 @@ class TusClient {
 
     if (!(response.statusCode >= 200 && response.statusCode < 300)) {
       throw ProtocolException(
-          "unexpected status code (${response.statusCode}) while resuming upload");
+        "Unexpected error while resuming upload",
+        response.statusCode,
+      );
     }
 
     int? serverOffset = _parseOffset(response.headers["upload-offset"]);
@@ -237,8 +355,8 @@ class TusClient {
   /// Get data from file to upload
 
   Future<Uint8List> _getData() async {
-    int start = _offset ?? 0;
-    int end = (_offset ?? 0) + maxChunkSize;
+    int start = _offset;
+    int end = _offset + maxChunkSize;
     end = end > (_fileSize ?? 0) ? _fileSize ?? 0 : end;
 
     final result = BytesBuilder();
@@ -247,7 +365,7 @@ class TusClient {
     }
 
     final bytesRead = min(maxChunkSize, result.length);
-    _offset = (_offset ?? 0) + bytesRead;
+    _offset = _offset + bytesRead;
 
     return result.takeBytes();
   }
@@ -268,11 +386,34 @@ class TusClient {
     }
     Uri uploadUrl = Uri.parse(urlStr);
     if (uploadUrl.host.isEmpty) {
-      uploadUrl = uploadUrl.replace(host: url.host, port: url.port);
+      uploadUrl = uploadUrl.replace(host: url?.host, port: url?.port);
     }
     if (uploadUrl.scheme.isEmpty) {
-      uploadUrl = uploadUrl.replace(scheme: url.scheme);
+      uploadUrl = uploadUrl.replace(scheme: url?.scheme);
     }
     return uploadUrl;
   }
+
+  http.StreamedResponse? _response;
+
+  int? _fileSize;
+
+  String _fingerprint = "";
+
+  String? _uploadMetadata;
+
+  Uri? _uploadUrl;
+
+  int _offset = 0;
+
+  bool _pauseUpload = false;
+
+  /// The URI on the server for the file
+  Uri? get uploadUrl => _uploadUrl;
+
+  /// The fingerprint of the file being uploaded
+  String get fingerprint => _fingerprint;
+
+  /// The 'Upload-Metadata' header sent to server
+  String get uploadMetadata => _uploadMetadata ?? "";
 }
