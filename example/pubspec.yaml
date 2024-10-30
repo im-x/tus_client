@@ -11,7 +11,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  tus_client_dart:
+  tus_client:
     path: ../
   cross_file: ^0.3.4
   file_picker: ^8.0.7

@@ -5,8 +5,8 @@ import 'dart:math' show min;
 import 'dart:typed_data' show Uint8List, BytesBuilder;
 import 'package:http/http.dart';
 import 'package:speed_test_dart/speed_test_dart.dart';
-import 'package:tus_client_dart/src/retry_scale.dart';
-import 'package:tus_client_dart/src/tus_client_base.dart';
+import 'package:tus_client/src/retry_scale.dart';
+import 'package:tus_client/src/tus_client_base.dart';
 
 import 'exceptions.dart';
 import 'package:http/http.dart' as http;
@@ -20,6 +20,8 @@ class TusClient extends TusClientBase {
     super.retries = 0,
     super.retryScale = RetryScale.constant,
     super.retryInterval = 0,
+    super.ignore409 = false,
+    super.postImageDirect = false,
   }) {
     _fingerprint = generateFingerprint() ?? "";
   }

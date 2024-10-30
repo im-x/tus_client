@@ -381,7 +381,7 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "0.7.2"
-  tus_client_dart:
+  tus_client:
     dependency: "direct main"
     description:
       path: ".."
